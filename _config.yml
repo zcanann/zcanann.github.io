@@ -1,2 +1,6 @@
 theme: jekyll-theme-minimal
 title: Zachary Canann
+markdown: kramdown
+kramdown:
+  input: GFM
+  math_engine: mathjax
