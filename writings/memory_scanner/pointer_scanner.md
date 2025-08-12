@@ -54,7 +54,7 @@ struct Player {
 - Pointers refer to addresses *near* a thing (e.g., $\(\text{player} + 0x28\)$), which is atypical for classical graph problems, and contributes to the intractability of naive BFS and DFS.
 - Displaying *unvalidated* results is rarely helpful; initial sets are huge and noisy.
 
-**Validation workflow (common practice):** relaunch the program, rediscover $\(T\)$, and check which collected structures still reach $\(T\)$; prune the rest.
+**Validation workflow (common practice):** relaunch the program, rediscover $T$, and check which collected structures still reach $T$; prune the rest.
 
 **Resiliency goal:** support paths like  
 `World* -> Map<ENTITY_ID, Entity*> -> Player* -> Inventory* -> Map<ITEMID, ItemStack*> -> ItemStack* -> ItemCount`,  
@@ -73,16 +73,16 @@ For intuition, we will first ignore heap hops. We want all static pointers from 
    $$
    H_0 \equiv (T - O,\; T + O).
    $$
-   The key observation is that $T$ exists within $\(H\)$, hence naming this $\(H_0\)$. Note that negative offsets for pointers are not typical (positive expansion), but supporting this makes us robust to swizzled data structures, which we will cover momentarily.
+   The key observation is that $T$ exists within $H$, hence naming this $H_0$. Note that negative offsets for pointers are not typical (positive expansion), but supporting this makes us robust to swizzled data structures, which we will cover momentarily.
 
 3. **Static hits at level 0.**  We iterate all static addresses, and collect those that contain a pointer falling within $\(H_0\)$.
    $$
    S_0 = \{ s \in S \mid *s \in H_0 \}.
    $$
 
-At this point, we have all static pointers directly to $\(T\)$, but it turns out that with a few additions, we can generalize this algorithm.
+At this point, we have all static pointers directly to $T$, but it turns out that with a few additions, we can generalize this algorithm.
 
-4. **Heap hits at level 1.** We perform the same exact operation that we just performed on $\(S\)$.
+4. **Heap hits at level 1.** We perform the same exact operation that we just performed on $S$.
    $$
    H_1 = \{ h \in H \mid *h \in H_0 \}.
    $$
@@ -121,9 +121,9 @@ This preserves the **no-exponential** property: we still reason in hop-space. If
 Enumerating **exact** paths is expensive (and again exponential in the worst case). We **defer** it until the user asks:
 
 - Present a GUI with a tree view:
-  - Roots = static modules (e.g., `game.exe`, `phys_x.dll`)
-  - Children = top-level heap hops, and so on
-  - Users expand along plausible short-hop branches and stop when they hit $\(T\)$
+  - Roots = static modules (e.g., `game.exe`, `phys_x.dll`).
+  - Children = top-level heap hops, and so on.
+  - Users expand along plausible short-hop branches and stop when they hit $T$.
 
 This is efficient because users rarely need the entire tree; they follow a handful of promising branches. If you *do* need exhaustive automation, the exponent shows up—but **after** validation has already shrunk the search space, which is still better than traditional approaches that pay this cost *before* validation.
 
@@ -133,7 +133,7 @@ This is efficient because users rarely need the entire tree; they follow a handf
 - **Data structures:** store merged ranges per level for $\(H_\ell\)$ and optional compact lists for $\(S_\ell\)$. Keep them sorted for binary search.
 - **Parallelism:** scanning memory for candidate pointers is embarrassingly parallel; split by region and merge ranges at the end.
 - **SIMD:** bulk compare words against range bounds; bitmask results feed into the binary search stage to minimize branches.
-- **Heaps vs statics:** collect module boundaries for $\(S\)$ (PE/ELF segments). For $\(H\)$, use the OS’s VMA enumeration, excluding guard/PROT_NONE.
+- **Heaps vs statics:** collect module boundaries for $S$ (PE/ELF segments). For $H$, use the OS’s VMA enumeration, excluding guard/PROT_NONE.
 - **Offsets:** the hop bound $\(O\)$ is a knob; larger $\(O\)$ increases recall (and noise). Symmetric $\((\pm O)\)$ improves robustness to container layouts.
 - **Admissible validation heuristics:** only prune when certain an entry is invalid; never prune a potentially valid one.
 
