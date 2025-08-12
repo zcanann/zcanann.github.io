@@ -41,16 +41,20 @@ struct Player {
 }
 ```
 
-**Requirements & constraints**
-- Large processes (e.g., 16 GB+ RAM).
-- Large depths (e.g., 15+ pointer hops).
-- Most process memory is zero; pointers are sparse but aggregated in structures, making naïve DFS/BFS intractable.
-- Many pointers are illusory (floats/garbage). Massive path collection up front is futile since validation prunes heavily.
-- Scoring and ranking are unimportant for our use cases. Displaying results sorted by static module origin (e.g., `game.exe` vs `phys_x.dll`) and hop distance are sufficient.
-- Displaying *unvalidated* results is rarely helpful; initial sets are huge and noisy.
-- Pointers refer to addresses *near* a thing (e.g., \(\text{player} + 0x28\)), which is atypical for classical graph problems.
+**Technical Requirements & Constraints**
+- Support large processes (e.g., 16 GB+ RAM).
+- Support large depths (e.g., 15+ pointer hops).
+- When validating results, missing results are unacceptable. Note that validation may use **admissible heuristics**; it is acceptable to retain an invalid result, but unacceptable to discard a valid result.
 
-**Validation workflow (common practice):** relaunch the program, rediscover \(T\), and check which collected structures still reach \(T\); prune the rest. Note that validation may use **admissible heuristics** (never prune valid results; ok to miss pruning some invalid ones).
+**Helpful Observations**
+- Scoring and ranking are unimportant for our use cases. Displaying results sorted by static module origin (e.g., `game.exe` vs `phys_x.dll`) and hop distance are sufficient.
+- Most process memory is zero. Anecdotally, there are many games where 75% of the process memory bytes are `00`.
+- Many pointers are illusory (floats/garbage). Massive path collection up front is futile since validation prunes heavily.
+- Pointers are often sparse but aggregated in structures.
+- Pointers refer to addresses *near* a thing (e.g., $\(\text{player} + 0x28\)$), which is atypical for classical graph problems, and contributes to the intractability of naive BFS and DFS.
+- Displaying *unvalidated* results is rarely helpful; initial sets are huge and noisy.
+
+**Validation workflow (common practice):** relaunch the program, rediscover $\(T\)$, and check which collected structures still reach $\(T\)$; prune the rest.
 
 **Resiliency goal:** support paths like  
 `World* -> Map<ENTITY_ID, Entity*> -> Player* -> Inventory* -> Map<ITEMID, ItemStack*> -> ItemStack* -> ItemCount`,  
@@ -61,21 +65,24 @@ despite key swizzling and intrinsic instability. These paths are technically val
 ## The Algorithm
 
 ### Pointer Collection (Range-Based Reachability)
-For intuition, first ignore heap hops. We want all static pointers from $S$ that land within offset $O$ of $T$.
+For intuition, we will first ignore heap hops. We want all static pointers from $S$ that land within offset $O$ of $T$. This simplification turns the problem into a very basic binary range search problem.
 
 1. **Snapshot memory.** Take a snapshot of $S$ (static) and $H$ (heap).
 
 2. **Level 0 range:** expand $T$ by $O$ to form  
    $$
-   H_0 \equiv (T - O,\; T) \quad \text{or symmetrically } (T - O,\; T + O).
+   H_0 \equiv (T - O,\; T + O).
    $$
+   The key observation is that $T$ exists within $\(H\)$, hence naming this $\(H_0\)$. Note that negative offsets for pointers are not typical (positive expansion), but supporting this makes us robust to swizzled data structures, which we will cover momentarily.
 
-3. **Static hits at level 0:**  
+3. **Static hits at level 0.**  We iterate all static addresses, and collect those that contain a pointer falling within $\(H_0\)$.
    $$
    S_0 = \{ s \in S \mid *s \in H_0 \}.
    $$
 
-4. **Heap hits at level 1:**  
+At this point, we have all static pointers directly to $\(T\)$, but it turns out that with a few additions, we can generalize this algorithm.
+
+4. **Heap hits at level 1.** We perform the same exact operation that we just performed on $\(S\)$.
    $$
    H_1 = \{ h \in H \mid *h \in H_0 \}.
    $$
@@ -85,10 +92,11 @@ For intuition, first ignore heap hops. We want all static pointers from $S$ that
    S_1 = \{ s \in S \mid *s \in \bigcup_{h \in H_1} (h - O,\; h + O) \}.
    $$
 
-6. **Iterate:** for level $\ell \ge 1$,
+6. **Iterate:** for level $\ell \ge 1$, construct heap reachability
    $$
    H_{\ell} = \{ h \in H \mid *h \in \bigcup_{x \in H_{\ell-1}} (x - O,\; x + O) \},
    $$
+   And construct static reachability
    $$
    S_{\ell} = \{ s \in S \mid *s \in \bigcup_{x \in H_{\ell}} (x - O,\; x + O) \}.
    $$
