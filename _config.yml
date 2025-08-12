@@ -4,3 +4,6 @@ markdown: kramdown
 kramdown:
   input: GFM
   math_engine: mathjax
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
