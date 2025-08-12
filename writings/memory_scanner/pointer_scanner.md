@@ -22,8 +22,8 @@ Existing solutions typically frame this as a graph problem and run into exponent
 ## Problem Definition
 Given a target address $T$, find all pointer paths from static memory $S$ (clearly defined below), optionally traversing heap regions $H$, ultimately pointing to $T$. Each hop is constrained by a maximum offset $O$.
 
-For example, $T$ may be player health located at: **[[[game.exe+0x201c]+0x18]+0x24]**  
-Semantically, this may mean: **World (static +0x201c) -> Player (+0x18) -> Health (+0x24)**
+For example, $T$ may be player health located at: `[[[game.exe+0x201c]+0x18]+0x24]`
+Semantically, this may mean: `World (static +0x201c) -> Player (+0x18) -> Health (+0x24)`
 
 In a high level language:
 ```
@@ -105,7 +105,7 @@ $$
 $$
 as merged ranges or address lists.
 
-This preserves the **no-exponential** property: we still reason in hop-space. If \(S_\ell\) reaches \(H_\ell'\), it can eventually reach \(T'\).
+This preserves the **no-exponential** property: we still reason in hop-space. If $\(S_\ell\)$ reaches $\(H_\ell'\)$, it can eventually reach $\(T'\)$.
 
 ---
 
@@ -115,18 +115,18 @@ Enumerating **exact** paths is expensive (and again exponential in the worst cas
 - Present a GUI with a tree view:
   - Roots = static modules (e.g., `game.exe`, `phys_x.dll`)
   - Children = top-level heap hops, and so on
-  - Users expand along plausible short-hop branches and stop when they hit \(T\)
+  - Users expand along plausible short-hop branches and stop when they hit $\(T\)$
 
 This is efficient because users rarely need the entire tree; they follow a handful of promising branches. If you *do* need exhaustive automation, the exponent shows up—but **after** validation has already shrunk the search space, which is still better than traditional approaches that pay this cost *before* validation.
 
 ---
 
 ## Notes on Implementation
-- **Data structures:** store merged ranges per level for \(H_\ell\) and optional compact lists for \(S_\ell\). Keep them sorted for binary search.
+- **Data structures:** store merged ranges per level for $\(H_\ell\)$ and optional compact lists for $\(S_\ell\)$. Keep them sorted for binary search.
 - **Parallelism:** scanning memory for candidate pointers is embarrassingly parallel; split by region and merge ranges at the end.
 - **SIMD:** bulk compare words against range bounds; bitmask results feed into the binary search stage to minimize branches.
-- **Heaps vs statics:** collect module boundaries for \(S\) (PE/ELF segments). For \(H\), use the OS’s VMA enumeration, excluding guard/PROT_NONE.
-- **Offsets:** the hop bound \(O\) is a knob; larger \(O\) increases recall (and noise). Symmetric \((\pm O)\) improves robustness to container layouts.
+- **Heaps vs statics:** collect module boundaries for $\(S\)$ (PE/ELF segments). For $\(H\)$, use the OS’s VMA enumeration, excluding guard/PROT_NONE.
+- **Offsets:** the hop bound $\(O\)$ is a knob; larger $\(O\)$ increases recall (and noise). Symmetric $\((\pm O)\)$ improves robustness to container layouts.
 - **Admissible validation heuristics:** only prune when certain an entry is invalid; never prune a potentially valid one.
 
 ---
