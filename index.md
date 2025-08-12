@@ -9,4 +9,4 @@ $$
 $$
 
 ## Writings
-- [Creating an Infinite(ish) Depth Pointer Scanning Algorithm](writings/pointer_scanner.md)
+- [Creating an Infinite(ish) Depth Pointer Scanning Algorithm](writings/memory_scanner/pointer_scanner.html)
