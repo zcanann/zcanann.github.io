@@ -3,8 +3,6 @@ layout: default
 title: Creating an Infinite(ish) Depth Pointer Scanning Algorithm
 ---
 
-{% include mathjax.html %}
-
 # Creating an Infinite(ish) Depth Pointer Scanning Algorithm
 An important problem that has, until now, remained unsolved by memory scanner developers is implementing an efficient pointer scanning algorithm. The premise is simple: we want to find pointer chains from **static memory** to a piece of useful information in **heap** memory.
 
@@ -17,8 +15,8 @@ Existing solutions typically frame this as a graph problem and run into exponent
 ## Problem Definition
 Given a target address \(T\), find all pointer paths from static memory \(S\) (clearly defined below), optionally traversing heap regions \(H\), ultimately pointing to \(T\). Each hop is constrained by a maximum offset \(O\).
 
-For example, T may be player health located at: [[[game.exe+0x201c]+0x18]+0x24]
-Semantically, this may mean: World (static +0x201c) -> Player (+0x18) -> Health (+0x24)
+For example, T may be player health located at: **[[[game.exe+0x201c]+0x18]+0x24]**
+Semantically, this may mean: **World (static +0x201c) -> Player (+0x18) -> Health (+0x24)**
 In a high level language, this may look more like:
 ```
 // Static global world instance.
