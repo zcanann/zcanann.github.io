@@ -1,12 +1,13 @@
 ---
 layout: default
-title: Welcome
+title: Zachary Canann's Writings
 ---
 {% include mathjax.html %}
 
-$$ 
-\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}
-$$
-
 ## Writings
-- [Creating an Infinite(ish) Depth Pointer Scanning Algorithm](writings/memory_scanner/pointer_scanner.html)
+
+### Game Development
+- [Networked State Machines as First-Class Citizens](writings/game_development/state_machines.html)
+
+### Game Hacking
+- [Creating an Infinite(ish) Depth Pointer Scanning Algorithm](writings/game_hacking/pointer_scanner.html)
