@@ -7,7 +7,7 @@ title: Zachary Canann's Writings
 ## Writings
 
 ### Game Development
-- [What Makes Games Successful?](writings/game_development/what_makes_games_successful/what_makes_games_successful.html)
+- [Luck, Risk, and the Coinflip of Success](writings/game_development/the_coinflip_of_success/the_coinflip_of_success.html)
 - [Networked State Machines as First-Class Citizens](writings/game_development/state_machines/state_machines.html)
 - [How We Wrote a Self-Hacking Game in C++](writings/game_development/self_modifying_game/self_modifying_game.html)
 
