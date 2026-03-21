@@ -3,8 +3,6 @@ layout: default
 title: Defeating Exponential Blowup - A Novel Approach to Pointer Scanning
 ---
 
-{% include mathjax.html %}
-
 # Defeating Exponential Blowup - A Novel Approach to Pointer Scanning
 Efficient pointer scanning is a longstanding problem in reverse-engineering, where reconstructing pointer paths can be crucial to understanding or exploiting a program.
 
@@ -20,14 +18,14 @@ This reframing allows pointer collection and validation to happen over a reachab
 We want to find pointer chains from static memory to some target.
 
 Let:
-- \(S\) be the set of static pointer locations.
-- \(H\) be the set of heap pointer locations.
-- \(T\) be the target address set.
-- \(O\) be the maximum allowed offset radius.
+- $S$ be the set of static pointer locations.
+- $H$ be the set of heap pointer locations.
+- $T$ be the target address set.
+- $O$ be the maximum allowed offset radius.
 
-For a classic address-seeded scan, \(T\) contains one address.
+For a classic address-seeded scan, $T$ contains one address.
 
-For a value-seeded scan, \(T\) contains **every address currently holding that value under the chosen data type**. That matters because the exact same collection pipeline can then run on either mode. The only difference is how we build the initial target set.
+For a value-seeded scan, $T$ contains **every address currently holding that value under the chosen data type**. That matters because the exact same collection pipeline can then run on either mode. The only difference is how we build the initial target set.
 
 The goal is to find chains like:
 
@@ -58,19 +56,19 @@ struct Player {
 The important subtlety is this: pointers usually do not point to the exact field we care about. They point near it. So each hop is not checking equality. It is checking whether a pointer value falls within a tolerated range around the next target.
 
 ## Why Naive Enumeration Blows Up
-Suppose every candidate node fans out to \(b\) more candidates, and we search to depth \(d\).
+Suppose every candidate node fans out to $b$ more candidates, and we search to depth $d$.
 
 Naively, the search space behaves like:
 
-\[
+$$
 1 + b + b^2 + \dots + b^d
-\]
+$$
 
 Which is:
 
-\[
+$$
 O(b^d)
-\]
+$$
 
 That is not a "bad implementation" problem. That is the natural cost of eagerly enumerating paths.
 
@@ -91,36 +89,36 @@ We ask:
 
 > which pointer locations can reach the current frontier within one hop?
 
-Define the expansion of a target set \(F\) by radius \(O\) as:
+Define the expansion of a target set $F$ by radius $O$ as:
 
-\[
+$$
 R(F) = \bigcup_{x \in F} [x - O,\; x + O]
-\]
+$$
 
 In practice we do not store this as an absurd list of tiny windows if many overlap. We sort the target addresses, expand them, and merge overlapping ranges into a compact frontier range set.
 
 That gives us a very clean level recurrence.
 
 ## Initial Collection
-Let \(F_0 = T\).
+Let $F_0 = T$.
 
-For each level \(\ell\):
+For each level $\ell$:
 
-\[
+$$
 S_\ell = \{ s \in S \mid *s \in R(F_\ell) \}
-\]
+$$
 
-\[
+$$
 H_\ell = \{ h \in H \mid *h \in R(F_\ell) \}
-\]
+$$
 
 Then the next frontier is simply:
 
-\[
+$$
 F_{\ell+1} = \text{addr}(H_\ell)
-\]
+$$
 
-Where \(\text{addr}(H_\ell)\) means the addresses of the heap pointers we just found.
+Where $\text{addr}(H_\ell)$ means the addresses of the heap pointers we just found.
 
 That is it. That is the whole shape. We do **not** enumerate paths during collection. We just discover which static and heap nodes are reachable at each hop depth.
 
@@ -153,19 +151,19 @@ This separation matters. The collection stage is CPU-bound kernel work. The sess
 Statics and heaps are stored as snapshots. We refresh their bytes first so the pointer scan kernels are working against current data.
 
 ### Step 2: Build a frontier range set
-Given target addresses \(T\), we expand each by \(\pm O\), sort them, and merge overlaps.
+Given target addresses $T$, we expand each by $\pm O$, sort them, and merge overlaps.
 
 So if the target set is:
 
-\[
+$$
 \{0x3000, 0x3080, 0x4000\}
-\]
+$$
 
-and \(O = 0x100\), then instead of three separate windows we get two merged ranges:
+and $O = 0x100$, then instead of three separate windows we get two merged ranges:
 
-\[
+$$
 [0x2F00, 0x3180], \quad [0x3F00, 0x4100]
-\]
+$$
 
 This matters because the kernel is now checking pointer values against a compact ordered range structure, not a noisy list of redundant intervals.
 
@@ -189,9 +187,9 @@ There is also a SIMD-friendly linear kernel for cases where chewing through alig
 
 Conceptually, the hot loop is just:
 
-\[
+$$
 \text{keep pointer at address } a \iff *a \in R(F_\ell)
-\]
+$$
 
 And because the region tasks are embarrassingly parallel, this scales very naturally across cores.
 
@@ -234,32 +232,32 @@ The design goal of our algorithm is simple:
 
 That is exactly what the current validator does.
 
-Suppose we restart the target process and rediscover a new target set \(T'\). Build:
+Suppose we restart the target process and rediscover a new target set $T'$. Build:
 
-\[
+$$
 F'_0 = T'
-\]
+$$
 
 Then for each level:
 
-1. rebuild the live heap frontier from the validation snapshot,
-2. reread the stored static roots for that level,
-3. keep statics whose live pointer value still reaches the current frontier,
-4. use rebuilt heap addresses as the next frontier.
+1. Rebuild the live heap frontier from the validation snapshot.
+2. Reread the stored static roots for that level.
+3. Keep statics whose live pointer value still reaches the current frontier.
+4. Use rebuilt heap addresses as the next frontier.
 
 More concretely:
 
-\[
+$$
 H'_\ell = \{ h \in H' \mid *h \in R(F'_\ell) \}
-\]
+$$
 
-\[
+$$
 S'_\ell = \{ s \in S_{\ell,\text{stored}} \mid *s_{\text{live}} \in R(F'_\ell) \}
-\]
+$$
 
-\[
+$$
 F'_{\ell+1} = \text{addr}(H'_\ell)
-\]
+$$
 
 ### Static Rebasing
 Stored static candidates are not kept as raw absolute addresses alone. They also retain module identity plus module offset.
@@ -297,14 +295,14 @@ Collection and validation both scale level-by-level.
 
 Ignoring the eventual user-driven path materialization cost, the core reachability pass behaves like:
 
-\[
+$$
 O(D \cdot W)
-\]
+$$
 
 Where:
 
-- \(D\) is the requested depth,
-- \(W\) is the work to scan the relevant memory through the chosen kernels.
+- $D$ is the requested depth,
+- $W$ is the work to scan the relevant memory through the chosen kernels.
 
 The important thing is what is **missing** from that expression: there is no branching factor term from explicit path expansion.
 
@@ -315,9 +313,9 @@ Value pointer scans slot naturally into this formulation.
 
 Instead of starting from one target address, we first resolve the target value under the chosen data type and collect every matching address:
 
-\[
+$$
 T = \{ a \mid \text{value}(a) = v \}
-\]
+$$
 
 After that, the pipeline is exactly the same.
 
