@@ -6,208 +6,378 @@ title: Defeating Exponential Blowup - A Novel Approach to Pointer Scanning
 {% include mathjax.html %}
 
 # Defeating Exponential Blowup - A Novel Approach to Pointer Scanning
-An important problem that has, until now, remained unsolved by memory scanner developers is implementing an efficient pointer scanning algorithm. The premise is simple: we want to find pointer chains from **static memory** to a piece of useful information in **heap memory**.
+Efficient pointer scanning is a longstanding problem in reverse-engineering, where reconstructing pointer paths can be crucial to understanding or exploiting a program.
 
-The existing solutions all fall into the same trap of framing this problem as a graph problem, resulting in exponential blowup when attempting to apply BFS or DFS to pointer discovery. As a result, these algorithms rely heavily on heuristics to cut down the search space, without solving the underlying formulation of the problem.
+Until now, every implementation suffers from exponential blowup from applying DFS or BFS to the problem. Generally, some form of backwards search from a target address to static roots is performed.
 
-This paper proposes a **range-based reachability method** that avoids the blowup by working in **hop-space**. The algorithm runs in linear time as a function of depth, is memory-efficient, trivially parallelizable, SIMD-friendly, and simple to implement. The key insight: although exponential expansion is inherent to enumerating paths, we can **factor it out and defer it** to user time (on-demand expansion) instead of algorithm time. This solution is extremely memory efficient, multi-thread compatible, SIMD friendly, and simple to implement.
+This paper shows that exponential blowup can be avoided by reframing the problem around the actual user requirements. This is accomplished by effectively factoring out the exponential portion of the problem and deferring it to user-time.
 
-# Problem Definition
-To formally state the problem, given an address $T$, find all pointer paths from static memory $S$, that optionally traverse through heaps $H$, ultimately pointing to $T$. Each hop is constrained by a maximum offset $O$.
+The core idea behind our algorithm is to stop treating "pointer path" as the primitive. The primitive is **reachability by hop**. We collect and validate in **hop-space**, not pointer-space. We only pay the explicit path cost later, on demand, when the user actually expands and explores collected pointers.
 
-Note that static can be defined somewhat arbitrarily. This could include loaded modules, or even early entries in the threadstack for relevant threads. This is an implementation detail that can be altered independently of this algorithm.
+This reframing allows pointer collection and validation to happen over a reachability graph, rather than a pointer graph, avoiding exponential materialization costs.
 
-To give an example problem, $T$ may be player health located at: `[[[game.exe+0x201c]+0x18]+0x24]`
-Semantically, this may mean: `World (static +0x201c) -> Player (+0x18) -> Health (+0x24)`
-In a high level language:
+## Problem Statement
+We want to find pointer chains from static memory to some target.
+
+Let:
+- \(S\) be the set of static pointer locations.
+- \(H\) be the set of heap pointer locations.
+- \(T\) be the target address set.
+- \(O\) be the maximum allowed offset radius.
+
+For a classic address-seeded scan, \(T\) contains one address.
+
+For a value-seeded scan, \(T\) contains **every address currently holding that value under the chosen data type**. That matters because the exact same collection pipeline can then run on either mode. The only difference is how we build the initial target set.
+
+The goal is to find chains like:
+
+```text
+[[[game.exe+0x201C]+0x18]+0x24]
 ```
-// Static global world instance.
-static World;
+
+Semantically:
+
+```text
+World -> Player -> Health
+```
+
+Or in code:
+
+```cpp
+static World* g_world;
 
 struct World {
-    ...
     Player* player;
-}
+};
 
 struct Player {
-    ...
     int health;
-}
+};
 ```
 
-**Technical Requirements & Constraints**
-- Support large processes (e.g., 16 GB+ RAM).
-- Support large depths (e.g., 15+ pointer hops).
-- Support for **Validation**. This is not formally defined, other than providing a method of reducing search space and invalid results. Generally, this means relaunching the program, finding $T$ again, and then validating whatever collected data structures are still able to reach $T$, pruning those that cannot. Some weaker forms of validation exist without relaunching.
-- When validating results, missing results are unacceptable. However, validation may use **admissible heuristics**; it is acceptable to retain an invalid result, but unacceptable to discard a valid result.
+The important subtlety is this: pointers usually do not point to the exact field we care about. They point near it. So each hop is not checking equality. It is checking whether a pointer value falls within a tolerated range around the next target.
 
-**Resiliency Goal:** While extremely challenging, it would be ideal to support a path such as:
-`World* -> Map<ENTITY_ID, Entity*> -> Player* -> Inventory* -> Map<ITEMID, ItemStack*> -> ItemStack* -> ItemCount`. Structures like a map can swizzle offsets, meaning these paths are intrinsically instable. However, these paths are technically valid when the entity is generally present, and overlooked by existing pointer scanners.
+## Why Naive Enumeration Blows Up
+Suppose every candidate node fans out to \(b\) more candidates, and we search to depth \(d\).
 
-**Helpful Observations**
-- Scoring and ranking are unimportant for our use cases. Displaying results sorted by static module origin (e.g., `game.exe` vs `phys_x.dll`) and hop distance are sufficient.
-- Most process memory is zero. Anecdotally, there are many games where 75% of the process memory bytes are `00`.
-- Many pointers are illusory (floats/garbage). Massive path collection up front is futile since validation prunes heavily.
-- Pointers are often sparse but aggregated in structures.
-- Pointers refer to addresses *near* a thing (e.g., $\(\text{player} + 0x28\)$), which is atypical for classical graph problems, and contributes to the intractability of naive BFS and DFS.
-- Displaying *unvalidated* results is rarely helpful; initial sets are huge and noisy.
+Naively, the search space behaves like:
 
-**Validation workflow (common practice):** relaunch the program, rediscover $T$, and check which collected structures still reach $T$; prune the rest.
+\[
+1 + b + b^2 + \dots + b^d
+\]
 
- But it would be actually useful if we could find and keep these paths in some way, because they are technically valid, especially if the entity is generally within the map, like a Player*.
+Which is:
 
-# The Algorithm
+\[
+O(b^d)
+\]
 
-## Pointer Collection
-For a moment, let us forget about the constraint of hopping through H. This means we simply want to find all pointer paths in S -> T. First, we take a snapshot of all static and heap memory, S and H. This is required for all pointer scanning algorithms.
+That is not a "bad implementation" problem. That is the natural cost of eagerly enumerating paths.
 
-It turns out that this can be expressed as a simple range check problem. We expand T backwards by O, giving us (T-O, T). In fact, T exists within H, so we will call this expanded range { H_0 }. Then we check every single address in S to determine if it falls within H_0. This will give us a list of all static pointers that fall within O of T. We will call this set S_0.
+And the insult to injury is that most of those paths are garbage:
+- Integer data pretending to be pointers.
+- Float bit patterns that happen to look pointer-ish.
+- Stale heap structure.
+- Completely unstable chains that fail immediately on validation.
 
-This entirely solves the problem for the case where we skip hopping through H, but it turns out that we can generalize the solution with a few additions. If we do the same operation on the heap, we can collect all addresses in the heap that fall within O of T. In other words, we collect all addresses in H that fall within H_0, yeilding H_1.
+So the old way pays exponential cost up front to generate data that you mostly did not want.
 
-This is where the pattern starts to generalize. If we want to find static addresses that hop through the heap 1 time to reach T, we simply iterate over S, and check the value at each address to see if it falls within O of every address in H_1 via a binary search over the sorted heap ranges. This can be done by first expanding all addresses collected in H_1 by O. Care must be taken in the implementation to merge any regions that overlap from this operation. Everything that matches can be inserted into S_1.
+## The Key Reframing: Work in Hop-Space
+Instead of asking:
 
-At this point, the entire algorithm is completely generalized to any depth. At each level, we produce S_l and H_l by finding all pointers that fall within the previous H_l-1. The first case of course is the case where H_0 = {(T-O, T)}.
+> what are all explicit pointer paths to the target?
 
-With this new binary search part, we now have developed a level based range reachability algorithm. In fact, we can augment this further to expand by O in both directions, creating (T-O, T+O), and doing similar for heap expansions. This gives us some resiliancy to map-like structures, which can shuffle offsets.
+We ask:
 
-It is important to note that we are not concerned with collecting exact offsets -- the key insight of this algorithm is operating in hops as the fundamental unit. This is how we avoid exponential blowup. At no point do we evaluate any individual path, instead we only check for reachability. We are answering the question "can we hop to T through S and H at each level by a maximum hop size of O".
+> which pointer locations can reach the current frontier within one hop?
 
-Once our algorithm is done, we have a set of {S_0, ... S_n}, {H_0, ... H_n}. These are very lightweight data structures that only contain ranges.
+Define the expansion of a target set \(F\) by radius \(O\) as:
 
-## Pointer Validation
-Most of our results will be spurious, due to false pointers from garbage data or floats that were wrongly interpreted as pointers. To validate this, the recommended method is to relaunch the target program, rediscover T manually through memory scanning or other means. At this point, we can consider every previously collected H_l to be useless.
+\[
+R(F) = \bigcup_{x \in F} [x - O,\; x + O]
+\]
 
-So, we discard these entirely, and rebuild them using the new (T-O, T+O) as our H_0. We do not rebuild S_l levels, as these are considered to still be valid. Once we rebuild each H_l using the exact method as before, we can validate each level of S_l by checking each static address at each level to see if it still contains a pointer that falls within H_l. Note that we only check if it falls within the exact level, ie S_0 checks to see if the pointer falls within H_0, and S_1 only checks if the pointers fall within H_1. Again, this is validated with a binary search, and if the pointer does not fall within range, it is discarded.
+In practice we do not store this as an absurd list of tiny windows if many overlap. We sort the target addresses, expand them, and merge overlapping ranges into a compact frontier range set.
 
-The key efficiency here is that we are still avoiding exponential blowup. We are making weaker guarantees in hop-space rather than pointer-space. If S_l can still reach H_l, then it is guaranteed to be able to eventually reach T.
+That gives us a very clean level recurrence.
+
+## Initial Collection
+Let \(F_0 = T\).
+
+For each level \(\ell\):
+
+\[
+S_\ell = \{ s \in S \mid *s \in R(F_\ell) \}
+\]
+
+\[
+H_\ell = \{ h \in H \mid *h \in R(F_\ell) \}
+\]
+
+Then the next frontier is simply:
+
+\[
+F_{\ell+1} = \text{addr}(H_\ell)
+\]
+
+Where \(\text{addr}(H_\ell)\) means the addresses of the heap pointers we just found.
+
+That is it. That is the whole shape. We do **not** enumerate paths during collection. We just discover which static and heap nodes are reachable at each hop depth.
+
+### Scalability
+At level 1, we find everything that can point near the target.
+At level 2, we find everything that can point near level 1 heap nodes.
+At level 3, we find everything that can point near level 2 heap nodes.
+
+And so on.
+
+The amount of work scales with:
+- The amount of memory scanned.
+- The number of levels requested.
+- The compactness of the frontier range set.
+
+This is substantially better than scaling with the number of explicit pointer paths hiding inside the graph.
+
+Additionally, because process memory is bounded and has a typical program structure, the algorithm "feels linear". Experimentally, beyond high depths the cost of each level remains constant.
+
+## Collection Algorithm
+Our algorithm is intentionally shaped like a simple pipeline:
+1. Collect snapshot values.
+2. Discover pointer levels.
+3. Build a retained session.
+4. Lazily materialize explicit display nodes later.
+
+This separation matters. The collection stage is CPU-bound kernel work. The session stage is just retained structure. The tree UI stage is deferred exponentiation.
+
+### Step 1: Collect values
+Statics and heaps are stored as snapshots. We refresh their bytes first so the pointer scan kernels are working against current data.
+
+### Step 2: Build a frontier range set
+Given target addresses \(T\), we expand each by \(\pm O\), sort them, and merge overlaps.
+
+So if the target set is:
+
+\[
+\{0x3000, 0x3080, 0x4000\}
+\]
+
+and \(O = 0x100\), then instead of three separate windows we get two merged ranges:
+
+\[
+[0x2F00, 0x3180], \quad [0x3F00, 0x4100]
+\]
+
+This matters because the kernel is now checking pointer values against a compact ordered range structure, not a noisy list of redundant intervals.
+
+### Step 3: Split memory into typed scan tasks
+The pointer scan does not classify static-vs-heap after a match. That would be wasted hot-path work.
+
+Instead, the snapshots are cut into **scan tasks** up front:
+
+- static tasks already know their `module_index` and `module_base`,
+- heap tasks already know they are heap,
+- task boundaries keep a small pointer-width overlap so we do not miss matches near chunk edges.
+
+This is important because it keeps the inner loop honest. When a kernel reports a pointer match, the code already knows whether it belongs to a static or heap candidate. No per-hit module walk. No ad hoc post-classification. Just append the candidate.
+
+### Step 4: Run the search kernel
+The range search kernel picks a search mode based on frontier shape.
+
+Very small frontiers can just use scalar linear checks.
+Larger frontiers switch to binary checks over merged ranges.
+There is also a SIMD-friendly linear kernel for cases where chewing through aligned pointer lanes wins.
+
+Conceptually, the hot loop is just:
+
+\[
+\text{keep pointer at address } a \iff *a \in R(F_\ell)
+\]
+
+And because the region tasks are embarrassingly parallel, this scales very naturally across cores.
+
+### Step 5: Retain levels, not paths
+For each depth we retain two sorted candidate lists:
+
+- static candidates for that level,
+- heap candidates for that level.
+
+Static candidates across all discovered depths become potential roots.
+Heap candidates become the next frontier source.
+
+This is the point where a lot of pointer scanners go wrong. They start eagerly rebuilding trees here.
+
+That is unnecessary.
+
+We only need levels.
 
 ## Deferred Exponentiation
-Finding these exact paths is expensive, and requires walking backwards form T, but the nice part is that we can defer this expensive operation. We actually never need to construct the exact paths until the user requests them. One possible UX for this flow would be to have a GUI with a tree based expansion. The roots would be each static module, ie 'game.exe' or 'phys_x.dll'. Then these can be expanded further to see all top level heap hops. These can be expanded recursively until they hit T. Generally, the user will greedily expand the shortest hops in the most relevant looking static module.
+Eventually the user wants to browse actual chains. Fine. That is where we pay the path cost. But we pay it **late** and when it does not matter nearly as much.
 
-This would be prohibitively expensive if we wanted to walk the entire tree, but the key insight is that for most use cases, manual walking is ideal. If the goal is to automate with tooling, or be exhaustive, then the exponential problem returns. That said, this algorithm is still more efficient than existing algorithms in that case, as by the time we pay the exponentiation price, we will have already reduced the search space by running validation. Existing algorithms need to pay the exponentiation price in validation.
+The session keeps per-level candidates and lazily materializes display nodes when the user expands part of the tree. A root page is basically all retained static candidates, ordered by shorter chains first. Expanding a node does a bounded lookup into the next relevant level and only materializes the requested page.
 
----
+This means the algorithm does **not** build the full tree up front. That is deliberate.
 
-## Notes on Implementation
-- **Data structures:** store merged ranges per level for $\(H_\ell\)$ and optional compact lists for $\(S_\ell\)$. Keep them sorted for binary search.
-- **Parallelism:** scanning memory for candidate pointers is embarrassingly parallel; split by region and merge ranges at the end.
-- **SIMD:** bulk compare words against range bounds; bitmask results feed into the binary search stage to minimize branches.
-- **Heaps vs statics:** collect module boundaries for $S$ (PE/ELF segments). For $H$, use the OS’s VMA enumeration, excluding guard/PROT_NONE.
-- **Offsets:** the hop bound $\(O\)$ is a knob; larger $\(O\)$ increases recall (and noise). Symmetric $\((\pm O)\)$ improves robustness to container layouts.
-- **Admissible validation heuristics:** only prune when certain an entry is invalid; never prune a potentially valid one.
+The graph may contain a huge number of possible paths. Most users are going to expand a tiny fraction of them:
+- Shortest paths first.
+- The most plausible module first.
+- Then a few children.
+- Then they stop when they find what they want.
 
----
+So the system is built around that workflow. The exponential part of the problem is still real, but most users simply do not experience it with this algorithm and workflow.
+
+## Validation Algorithm
+Validation is where most pointer scanners become either painfully slow or conceptually incoherent.
+
+The design goal of our algorithm is simple:
+
+**validation should look like collection as much as possible.**
+
+That is exactly what the current validator does.
+
+Suppose we restart the target process and rediscover a new target set \(T'\). Build:
+
+\[
+F'_0 = T'
+\]
+
+Then for each level:
+
+1. rebuild the live heap frontier from the validation snapshot,
+2. reread the stored static roots for that level,
+3. keep statics whose live pointer value still reaches the current frontier,
+4. use rebuilt heap addresses as the next frontier.
+
+More concretely:
+
+\[
+H'_\ell = \{ h \in H' \mid *h \in R(F'_\ell) \}
+\]
+
+\[
+S'_\ell = \{ s \in S_{\ell,\text{stored}} \mid *s_{\text{live}} \in R(F'_\ell) \}
+\]
+
+\[
+F'_{\ell+1} = \text{addr}(H'_\ell)
+\]
+
+### Static Rebasing
+Stored static candidates are not kept as raw absolute addresses alone. They also retain module identity plus module offset.
+
+So during validation, a static candidate from:
+
+```text
+game.exe + 0x10
+```
+
+can be rebased to the module's **current** load address before rereading memory.
+
+This is crucial because ASLR is not a special case here. It is the expected case.
+
+### Conservative Validation
+This validator is intentionally a **hop-space** validator, not an exhaustive pointer-space proof.
+
+That means it is designed to avoid false negatives. If a retained static still reaches the rebuilt frontier at its level, we keep it.
+
+That is a stronger guarantee in the direction we actually care about:
+
+- accidentally dropping a valid chain is bad,
+- retaining an extra chain is tolerable.
+
+This is especially relevant for value-seeded scans. If you scan for one value, then validate against another, the validation pass can still conservatively retain chains that an exact fresh pointer-path enumeration might reject.
+
+That is not a bug in the mathematical framing. That is the expected tradeoff of conservative hop-space validation.
+
+If you want the shortest description, it is this:
+
+**validation is a conservative pruning pass over the retained reachability structure, not a full fresh path proof.**
+
+## How This Avoids Exponential Blowup During Collection
+Collection and validation both scale level-by-level.
+
+Ignoring the eventual user-driven path materialization cost, the core reachability pass behaves like:
+
+\[
+O(D \cdot W)
+\]
+
+Where:
+
+- \(D\) is the requested depth,
+- \(W\) is the work to scan the relevant memory through the chosen kernels.
+
+The important thing is what is **missing** from that expression: there is no branching factor term from explicit path expansion.
+
+That does not mean exponentiation vanished from the universe. It means we stopped paying it during the wrong phase.
+
+## Value-Seeded Pointer Scans
+Value pointer scans slot naturally into this formulation.
+
+Instead of starting from one target address, we first resolve the target value under the chosen data type and collect every matching address:
+
+\[
+T = \{ a \mid \text{value}(a) = v \}
+\]
+
+After that, the pipeline is exactly the same.
+
+That is a nice property of the formulation. The collection engine does not care whether the frontier came from:
+
+- one address,
+- many addresses,
+- or a value scan that exploded into many live targets.
+
+A frontier is a frontier.
+
+## Practical Implementation Notes
+A few implementation details matter more than they might seem.
+
+### 1. The inner loop is typed before it starts
+Static and heap tasks are split before scanning, so the hot path is not doing classification work after every hit.
+
+### 2. Task boundaries overlap by pointer width
+This prevents chunking from dropping valid pointers that begin near the end of one task and extend into the next.
+
+### 3. Frontier ranges are merged aggressively
+If many target expansions overlap, we collapse them before scanning. This shrinks the effective search structure and makes the kernel's life much easier.
+
+### 4. Session data stays level-based
+The retained structure is levels plus candidates. Not rebuilt trees. Not memo junk. Just the data actually needed for lazy expansion.
+
+### 5. Tree nodes are materialized late
+Display nodes carry things like:
+
+- resolved target address,
+- current display depth,
+- total branch depth,
+- pointer offset for that specific hop.
+
+That is UI-facing structure, not scan-facing structure.
+
+Keeping those concerns apart is what keeps the collector fast and the browser understandable.
+
+## The Mental Model
+If I had to compress the whole design into one sentence, it would be this:
+
+**Pointer scanning is not about discovering paths first. It is about discovering reachable hop frontiers first, then paying for paths only when someone actually cares.**
+
+Once you internalize that, the system stops feeling magical.
+
+At each level, we are just doing:
+- Frontier range construction.
+- Pointer-value search over memory.
+- Static/heap retention.
+- Next frontier generation.
+
+That is a very sane systems problem. And it turns a historically ugly exponential algorithm into something that is actually pleasant to run, validate, and browse.
 
 ## Summary
-By reframing pointer scanning as **level-wise range reachability**, we:
-- Avoid exponential path enumeration during collection and validation.
-- Leverage cheap binary searches over merged ranges.
-- Gain robustness to real-world layouts (maps, swizzled offsets).
-- Keep exponentiation **deferred** and **user-driven**.
+The current Squalr pointer scanner works because it takes the expensive part of the problem and moves it to the only place where paying it makes sense.
+- Collection works in hop-space.
+- Validation works in hop-space.
+- Static roots are retained by level.
+- Heap frontiers are rebuilt level-by-level.
+- Exact display trees are materialized lazily.
+- Value-seeded scans fit the same model as address-seeded scans.
 
-In short: think in **hops and ranges**, not explicit pointer paths, until you truly need them. And when they are needed, only display the bare minimum to avoid paying the full exponentiation cost.
-
-# OLD
-# OLD
-# OLD
-
-# Creating an Infinite(ish) Depth Pointer Scanning Algorithm
-An important problem that has, until now, remained unsolved by memory scanner developers is implementing an efficient pointer scanning algorithm. The premise is simple: we want to find pointer chains from **static memory** to a piece of useful information in **heap** memory.
-
-Existing solutions typically frame this as a graph problem and run into exponential blowup when applying either BFS or DFS. They rely heavily on heuristics to prune the search space rather than changing the problem formulation.
-
-**This paper proposes a range-based reachability method** that avoids the blowup by working in **hop-space**. The algorithm runs in linear time as a function of depth, is memory-efficient, trivially parallelizable, SIMD-friendly, and simple to implement. The key insight: although exponential expansion is inherent to enumerating paths, we can **factor it out** and **defer** it to user time (on-demand expansion) instead of algorithm time.
-
----
-
-## Problem Definition
-Given a target address $T$, find all pointer paths from static memory $S$ (clearly defined below), optionally traversing heap regions $H$, ultimately pointing to $T$. Each hop is constrained by a maximum offset $O$.
-
-For example, $T$ may be player health located at: `[[[game.exe+0x201c]+0x18]+0x24]`
-Semantically, this may mean: `World (static +0x201c) -> Player (+0x18) -> Health (+0x24)`
-
-In a high level language:
-```
-// Static global world instance.
-static World;
-
-struct World {
-    ...
-    Player* player;
-}
-
-struct Player {
-    ...
-    int health;
-}
-```
-
-
----
-
-## The Algorithm
-
-### Pointer Collection (Range-Based Reachability)
-For intuition, we will first ignore heap hops. We want all static pointers from $S$ that land within offset $O$ of $T$. This simplification turns the problem into a very basic binary range search problem.
-
-1. **Snapshot memory.** Take a snapshot of $S$ (static) and $H$ (heap).
-
-2. **Level 0 range:** expand $T$ by $O$ to form  
-   $$
-   H_0 \equiv (T - O,\; T + O).
-   $$
-   The key observation is that $T$ exists within $H$, hence naming this $H_0$. Note that negative offsets for pointers are not typical (positive expansion), but supporting this makes us robust to swizzled data structures, which we will cover momentarily.
-
-3. **Static hits at level 0.**  We iterate all static addresses, and collect those that contain a pointer falling within $\(H_0\)$.
-   $$
-   S_0 = \{ s \in S \mid *s \in H_0 \}.
-   $$
-
-At this point, we have all static pointers directly to $T$, but it turns out that with a few additions, we can generalize this algorithm.
-
-4. **Heap hits at level 1.** We perform the same exact operation that we just performed on $S$.
-   $$
-   H_1 = \{ h \in H \mid *h \in H_0 \}.
-   $$
-
-5. **Generalize to deeper levels:**  
-   $$
-   S_1 = \{ s \in S \mid *s \in \bigcup_{h \in H_1} (h - O,\; h + O) \}.
-   $$
-
-6. **Iterate:** for level $\ell \ge 1$, construct heap reachability
-   $$
-   H_{\ell} = \{ h \in H \mid *h \in \bigcup_{x \in H_{\ell-1}} (x - O,\; x + O) \},
-   $$
-   And construct static reachability
-   $$
-   S_{\ell} = \{ s \in S \mid *s \in \bigcup_{x \in H_{\ell}} (x - O,\; x + O) \}.
-   $$
-
-7. **Symmetric expansion:** use  
-   $$
-   (T - O,\; T + O)
-   $$
-   and similarly for heap expansions.
-
-At completion:
-$$
-\{S_0,\ldots,S_n\},\quad \{H_0,\ldots,H_n\}
-$$
-as merged ranges or address lists.
-
-This preserves the **no-exponential** property: we still reason in hop-space. If $\(S_\ell\)$ reaches $\(H_\ell'\)$, it can eventually reach $\(T'\)$.
-
----
-
-### Deferred Exponentiation (On-Demand Path Materialization)
-Enumerating **exact** paths is expensive (and again exponential in the worst case). We **defer** it until the user asks:
-
-- Present a GUI with a tree view:
-  - Roots = static modules (e.g., `game.exe`, `phys_x.dll`).
-  - Children = top-level heap hops, and so on.
-  - Users expand along plausible short-hop branches and stop when they hit $T$.
-
-This is efficient because users rarely need the entire tree; they follow a handful of promising branches. If you *do* need exhaustive automation, the exponent shows up—but **after** validation has already shrunk the search space, which is still better than traditional approaches that pay this cost *before* validation.
-
+In short, **collect reachability, not paths.** Then let the user expand the parts of the graph that actually matter.
