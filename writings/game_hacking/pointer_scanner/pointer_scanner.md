@@ -195,18 +195,13 @@ And because the region tasks are embarrassingly parallel, this scales very natur
 
 ### Step 5: Retain levels, not paths
 For each depth we retain two sorted candidate lists:
-
-- static candidates for that level,
-- heap candidates for that level.
+- Static candidates for that level.
+- Heap candidates for that level.
 
 Static candidates across all discovered depths become potential roots.
 Heap candidates become the next frontier source.
 
-This is the point where a lot of pointer scanners go wrong. They start eagerly rebuilding trees here.
-
-That is unnecessary.
-
-We only need levels.
+This is the point where a lot of pointer scanners go wrong. They start eagerly rebuilding trees here. That is unnecessary. We only need levels.
 
 ## Deferred Exponentiation
 Eventually the user wants to browse actual chains. Fine. That is where we pay the path cost. But we pay it **late** and when it does not matter nearly as much.
