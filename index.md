@@ -6,8 +6,13 @@ title: Zachary Canann's Writings
 
 ## Writings
 
+### Operating Systems
+- [It's Time to Make a New Operating System](writings/operating_systems/its_time_to_make_an_os/its_time_to_make_an_os.html)
+
+### Programming Languages
+- [A New Language for a New Operating System](writings/programming_languages/a_new_language_for_a_new_os/a_new_language_for_a_new_os.html)
+
 ### Game Development
-- [Luck, Risk, and the Coinflip of Success](writings/game_development/the_coinflip_of_success/the_coinflip_of_success.html)
 - [Networked State Machines as First-Class Citizens](writings/game_development/state_machines/state_machines.html)
 - [How We Wrote a Self-Hacking Game in C++](writings/game_development/self_modifying_game/self_modifying_game.html)
 

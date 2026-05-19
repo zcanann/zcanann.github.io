@@ -210,6 +210,55 @@ The session keeps per-level candidates and lazily materializes display nodes whe
 
 This means the algorithm does **not** build the full tree up front. That is deliberate.
 
+### The Materialization Trick
+The missing question is obvious:
+
+> if we only retained level candidates, how do we know which children belong under a given node?
+
+The answer is that we do **not** store explicit child edges during collection. We recover them from adjacent retained levels when the user expands a node.
+
+Suppose a materialized node corresponds to a retained pointer candidate with pointer value $v$ and offset radius $O$.
+
+If this is **not** a terminal hop, then its children are exactly the heap candidates from the next shallower retained level whose **pointer addresses** fall inside:
+
+$$
+[v - O,\; v + O]
+$$
+
+That works because the next hop in the chain must live at an address near the current pointer's pointee value. So child materialization is just a bounded range query into the next retained heap level, not a graph traversal over prebuilt edges.
+
+In other words, for an intermediate node we do:
+
+$$
+\text{children}(v) = \{ h \in H_{\ell - 1} \mid \text{addr}(h) \in [v - O,\; v + O] \}
+$$
+
+That is the trick that makes the UI tree possible without ever eagerly building the full tree.
+
+### Terminal Materialization
+The terminal case is different because there is no deeper retained heap level to query.
+
+So at the final hop we do **not** ask for children from another level. Instead, we directly materialize the actual target match:
+
+- for an address-seeded scan, that is the single concrete target address,
+- for a value-seeded scan, that is every matching target address within the terminal range.
+
+So intermediate nodes are reconstructed from the next retained heap layer, while terminal nodes resolve directly to final targets.
+
+This distinction is what makes the lazy tree coherent:
+- non-terminal expansion means "show me the next legal hop candidates.",
+- terminal expansion means "show me the actual resolved target match."
+
+### Why This Matters
+This is more than a UI detail. It is the reason the retained session can stay level-based instead of edge-based.
+
+We only need:
+- the retained candidates for each hop depth,
+- the offset radius,
+- and the target set.
+
+Everything else can be reconstructed on demand.
+
 The graph may contain a huge number of possible paths. Most users are going to expand a tiny fraction of them:
 - Shortest paths first.
 - The most plausible module first.
@@ -348,6 +397,13 @@ Display nodes carry things like:
 That is UI-facing structure, not scan-facing structure.
 
 Keeping those concerns apart is what keeps the collector fast and the browser understandable.
+
+### 6. Child edges are reconstructed, not stored
+For intermediate nodes, child edges are recovered by doing a range lookup into the next shallower retained heap level using the current node's pointee value.
+
+For terminal nodes, there is no next retained level, so the node resolves directly to the final target address set instead.
+
+That means the retained session never needs a fully materialized adjacency list. The tree you browse is a lazy view over hop-space reachability data.
 
 ## The Mental Model
 If I had to compress the whole design into one sentence, it would be this:
